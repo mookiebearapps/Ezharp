@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>HTML5 Ez Harp</title>
+    <style>
+        * { box-sizing: border-box; }
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%; height: 100dvh;
+            background-color: #000; font-family: sans-serif; overflow: hidden; touch-action: none;
+        }
+        #app-container {
+            position: absolute; top: 45px; left: 0; width: 100vw;
+            height: calc(100% - 45px); height: calc(100dvh - 45px);
+            display: flex; background: #000;
+        }
+        .chord-column {
+            flex: 1; display: flex; flex-direction: column; position: relative; height: 100%;
+            border-right: 1px solid rgba(255,255,255,0.1);
+        }
+        .strings-wrapper {
+            flex: 1; display: flex; flex-direction: column-reverse; position: relative; width: 100%;
+        }
+        .string-row {
+            flex: 1; border-top: 1px solid rgba(0, 0, 0, 0.5); display: flex; align-items: center;
+            position: relative; user-select: none; opacity: 0.15; transition: opacity 0.1s;
+        }
+        .string-row.active-string { opacity: 1.0; }
+        .string-line {
+            position: absolute; width: 100%; height: 2px; top: 50%; transform: translateY(-50%); pointer-events: none;
+        }
+        .string-row.playing .string-line { height: 5px; box-shadow: 0 0 10px rgba(255,255,255,0.9); }
+        .chord-label {
+            height: 40px; background: rgba(15, 15, 15, 0.95); color: #fff; display: flex;
+            align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem;
+            border-top: 1px solid rgba(255,255,255,0.2); z-index: 10;
+        }
+        .top-controls {
+            position: absolute; top: 5px; right: 10px; display: flex; gap: 8px; z-index: 100;
+        }
+        .top-btn {
+            background: rgba(40, 40, 40, 0.9);
+            color: #fff; border: 1px solid #666; padding: 6px 12px; border-radius: 4px;
+            font-size: 0.85rem; cursor: pointer; box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+        }
+        #modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 200;
+        }
+        .modal-content {
+            background: #222; color: #fff; padding: 20px; border-radius: 8px; width: 90%; max-width: 450px;
+        }
+        .preset-item { padding: 12px; background: #333; margin-bottom: 8px; border-radius: 4px; cursor: pointer; }
+        .custom-box { margin-top: 15px; display: flex; gap: 10px; }
+        .custom-box input { flex: 1; padding: 10px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; }
+        .custom-box button { padding: 10px 15px; background: #0088cc; border: none; color: #fff; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <div class="top-controls">
+        <button class="top-btn" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+        <button class="top-btn" onclick="openModal()">☰ Chords</button>
+    </div>
+
+    <div id="app-container"></div>
+
+    <div id="modal">
+        <div class="modal-content">
+            <h3>Select Chord Set</h3>
+            <div id="presets-list"></div>
+            <div class="custom-box">
+                <input type="text" id="custom-input" placeholder="e.g. D, A, Bm, F#m, G, D, G, A">
+                <button onclick="loadCustomChords()">Load</button>
+            </div>
+            <button onclick="closeModal()" style="margin-top:15px; width:100%; padding:10px; background:#444; color:#fff; border:none; border-radius:4px; cursor:pointer;">Cancel</button>
+        </div>
+    </div>
+
+<script>
+    const nStrings = 20;
+    const presets = [
+        { name: "Pachelbel's Canon (D, A, Bm, F#m, G, D, G, A)", chords: ["D", "A", "Bm", "F#m", "G", "D", "G", "A"] },
+        { name: "C, Cm, dm, Csus4, Caug", chords: ["C", "Cm", "dm", "Csus4", "Caug"] },
+        { name: "C, Em, F, G7, Am, D, Bb", chords: ["C", "Em", "F", "G7", "Am", "D", "Bb"] },
+        { name: "C, F, G, G7, D7", chords: ["C", "F", "G", "G7", "D7"] }
+    ];
+
+    let currentChords = ["D", "A", "Bm", "F#m", "G", "D", "G", "A"];
+    let audioCtx = null;
+
+    const baseFreqs = [65.14, 87.03, 97.72, 130.55, 138.33, 146.58, 155.33, 164.59, 174.41, 184.81, 195.83, 207.51, 219.89, 233.00, 246.90, 261.62, 277.22, 293.76, 311.28, 329.84];
+    const noteNames = ["C","F","G","C","C#","D","D#","E","F","F#","G","G#","A","A#","B","C","C#","D","D#","E"];
+
+    const chordTable = { 
+        'C':0, 'C#':1, 'Db':1, 'D':2, 'D#':3, 'Eb':3, 'E':4, 'F':5, 'F#':6, 'Gb':6, 'G':7, 'G#':8, 'Ab':8, 'A':9, 'A#':10, 'Bb':10, 'B':11 
+    };
+
+    function getChordValues(chordName) {
+        const cc = chordName.trim();
+        const ccLower = cc.toLowerCase();
+
+        const dm = ccLower.includes('dim');
+        const maj7 = ccLower.includes('maj7');
+        const minor = ccLower.includes('min') || ((ccLower.includes('m') || ccLower.includes('min')) && !dm && !maj7 && ccLower !== 'maj');
+        const seventh = ccLower.includes('7') && !maj7;
+        const fifth = ccLower.includes('5');
+        const sixth = ccLower.includes('6');
+        const ninth = ccLower.includes('add9') || ccLower.includes('9');
+        const eleventh = ccLower.includes('11');
+        const sus = ccLower.includes('sus4');
+        const sus2 = ccLower.includes('sus2');
+        const aug = ccLower.includes('aug');
+        const opn = ccLower.includes('0');
+
+        const major = !minor && !sus && !dm && !aug && !fifth && !sus2 && !opn;
+
+        let root = cc.charAt(0).toUpperCase();
+        if (cc.length > 1 && (cc.charAt(1) === '#' || cc.charAt(1) === 'b')) {
+            root += cc.charAt(1);
+        }
+        const c = chordTable[root] !== undefined ? chordTable[root] : 0;
+
+        let vals = [];
+        for (let v = 0; v < 12; v++) {
+            let m = ((v - c + 12) % 12) + 1;
+            let play = false;
+            if (m === 1) play = true;
+            if (major && (m === 5 || m === 8)) play = true;
+            if (minor && (m === 4 || m === 8)) play = true;
+            if (seventh && m === 11) play = true;
+            if (maj7 && m === 12) play = true;
+            if (dm && (m === 4 || m === 7)) play = true;
+            if (aug && (m === 6 || m === 9)) play = true;
+            if (fifth && m === 8) play = true;
+            if (sixth && m === 10) play = true;
+            if (ninth && (m === 10 || m === 2)) play = true;
+            if (eleventh && (m === 10 || m === 6)) play = true;
+            if (sus && (m === 6 || m === 8)) play = true;
+            if (sus2 && (m === 3 || m === 8)) play = true;
+
+            if (vals.length < 15 && play) vals.push(v);
+        }
+        return vals;
+    }
+
+    function getHsvColor(h, s, v) {
+        let c = v * s, hp = h / 60, x = c * (1 - Math.abs((hp % 2) - 1));
+        let r = 0, g = 0, b = 0;
+        if (0 <= hp && hp < 1) { r = c; g = x; b = 0; }
+        else if (1 <= hp && hp < 2) { r = x; g = c; b = 0; }
+        else if (2 <= hp && hp < 3) { r = 0; g = c; b = x; }
+        else if (3 <= hp && hp < 4) { r = 0; g = x; b = c; }
+        else if (4 <= hp && hp < 5) { r = x; g = 0; b = c; }
+        else if (5 <= hp && hp <= 6) { r = c; g = 0; b = x; }
+        let m = v - c;
+        return `rgb(${Math.round((r+m)*255)}, ${Math.round((g+m)*255)}, ${Math.round((b+m)*255)})`;
+    }
+
+    let gridPads = [];
+
+    function buildUI() {
+        const container = document.getElementById('app-container');
+        container.innerHTML = '';
+        gridPads = [];
+
+        currentChords.forEach((chord, colIndex) => {
+            const col = document.createElement('div');
+            col.className = 'chord-column';
+            const stringsWrapper = document.createElement('div');
+            stringsWrapper.className = 'strings-wrapper';
+
+            const baseHue = (colIndex * (360 / currentChords.length)) % 360;
+            const chordVals = getChordValues(chord);
+            
+            let padCol = [];
+            let lastY = 0;
+
+            for (let y = 0; y < nStrings; y++) {
+                const row = document.createElement('div');
+                row.className = 'string-row';
+
+                const nName = noteNames[y % noteNames.length];
+                const strVal = chordTable[nName] !== undefined ? chordTable[nName] : 0;
+                
+                let isAct = chordVals.includes(strVal);
+                if (isAct) {
+                    lastY = y + 1;
+                    row.classList.add('active-string');
+                }
+                padCol.push(lastY);
+
+                const lum = (y / nStrings) * 0.4 + 0.3;
+                const color = getHsvColor(baseHue, 0.9, lum);
+                const line = document.createElement('div');
+                line.className = 'string-line';
+                line.style.backgroundColor = isAct ? color : '#222';
+                row.appendChild(line);
+
+                row.dataset.col = colIndex;
+                row.dataset.row = y;
+                stringsWrapper.appendChild(row);
+            }
+            gridPads.push(padCol);
+            col.appendChild(stringsWrapper);
+
+            const label = document.createElement('div');
+            label.className = 'chord-label';
+            label.innerText = chord;
+            col.appendChild(label);
+
+            container.appendChild(col);
+        });
+    }
+
+    function toggleFullscreen() {
+        if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+            const elem = document.documentElement;
+            if (elem.requestFullscreen) {
+                elem.requestFullscreen();
+            } else if (elem.webkitRequestFullscreen) {
+                elem.webkitRequestFullscreen();
+            }
+        } else {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            }
+        }
+    }
+
+    function openModal() {
+        const list = document.getElementById('presets-list');
+        list.innerHTML = '';
+        presets.forEach(p => {
+            const div = document.createElement('div');
+            div.className = 'preset-item';
+            div.innerText = p.name;
+            div.onclick = () => { currentChords = p.chords; buildUI(); closeModal(); };
+            list.appendChild(div);
+        });
+        document.getElementById('modal').style.display = 'flex';
+    }
+
+    function closeModal() { document.getElementById('modal').style.display = 'none'; }
+    function loadCustomChords() {
+        const val = document.getElementById('custom-input').value.trim();
+        if (val) { currentChords = val.split(',').map(s => s.trim()).filter(s => s.length > 0); buildUI(); closeModal(); }
+    }
+
+    function playTone(frequency, panValue = 0) {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const now = audioCtx.currentTime;
+        const masterGain = audioCtx.createGain();
+        const filter = audioCtx.createBiquadFilter();
+        const panner = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(frequency * 16, now);
+        filter.frequency.exponentialRampToValueAtTime(frequency * 1.5, now + 0.08);
+        filter.Q.setValueAtTime(3.0, now);
+
+        masterGain.gain.setValueAtTime(0, now);
+        masterGain.gain.linearRampToValueAtTime(0.22, now + 0.004);
+        masterGain.gain.exponentialRampToValueAtTime(0.0001, now + 3.0);
+
+        const osc1 = audioCtx.createOscillator();
+        osc1.type = 'sawtooth';
+        osc1.frequency.setValueAtTime(frequency, now);
+
+        const osc2 = audioCtx.createOscillator();
+        osc2.type = 'triangle';
+        osc2.frequency.setValueAtTime(frequency * 1.003, now);
+
+        const osc3 = audioCtx.createOscillator();
+        osc3.type = 'sine';
+        osc3.frequency.setValueAtTime(frequency * 2, now);
+        const subGain = audioCtx.createGain();
+        subGain.gain.setValueAtTime(0.25, now);
+
+        osc1.connect(filter); osc2.connect(filter);
+        osc3.connect(subGain); subGain.connect(filter);
+        filter.connect(masterGain);
+
+        if (panner) {
+            panner.pan.setValueAtTime(panValue, now);
+            masterGain.connect(panner); panner.connect(audioCtx.destination);
+        } else {
+            masterGain.connect(audioCtx.destination);
+        }
+
+        osc1.start(now); osc2.start(now); osc3.start(now);
+        osc1.stop(now + 3.0); osc2.stop(now + 3.0); osc3.stop(now + 3.0);
+    }
+
+    const oldNotesPerCol = new Array(10).fill(0).map(() => new Set());
+
+    function handleTouchMoveOrStart(e) {
+        e.preventDefault();
+        const currentActiveNotes = new Array(currentChords.length).fill(0).map(() => new Set());
+
+        for (let i = 0; i < e.touches.length; i++) {
+            const touch = e.touches[i];
+            const target = document.elementFromPoint(touch.clientX, touch.clientY);
+            if (target && target.dataset.col !== undefined) {
+                const px = parseInt(target.dataset.col);
+                const py = parseInt(target.dataset.row);
+                const noteVal = gridPads[px] ? gridPads[px][py] : 0;
+                if (noteVal > 0) currentActiveNotes[px].add(noteVal);
+            }
+        }
+
+        currentChords.forEach((_, x) => {
+            const oldSet = oldNotesPerCol[x];
+            const newSet = currentActiveNotes[x];
+
+            newSet.forEach(note => {
+                if (!oldSet.has(note)) {
+                    oldSet.add(note);
+                    const freq = baseFreqs[(note - 1) % baseFreqs.length] * 2;
+                    const pan = (x / (currentChords.length - 1)) * 0.8 - 0.4;
+                    playTone(freq, isNaN(pan) ? 0 : pan);
+                }
+            });
+
+            oldSet.forEach(note => {
+                if (!newSet.has(note)) oldSet.delete(note);
+            });
+        });
+
+        document.querySelectorAll('.string-row.playing').forEach(el => el.classList.remove('playing'));
+        for (let i = 0; i < e.touches.length; i++) {
+            const touch = e.touches[i];
+            const target = document.elementFromPoint(touch.clientX, touch.clientY);
+            if (target && target.classList.contains('string-row')) target.classList.add('playing');
+        }
+    }
+
+    function handleTouchEnd(e) {
+        e.preventDefault();
+        if (e.touches.length === 0) {
+            oldNotesPerCol.forEach(set => set.clear());
+            document.querySelectorAll('.string-row.playing').forEach(el => el.classList.remove('playing'));
+        }
+    }
+
+    let isMouseDown = false;
+    const container = document.getElementById('app-container');
+
+    container.addEventListener('mousedown', (e) => { isMouseDown = true; processMouse(e.clientX, e.clientY); });
+    container.addEventListener('mousemove', (e) => { if (isMouseDown) processMouse(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', () => {
+        isMouseDown = false;
+        oldNotesPerCol.forEach(set => set.clear());
+        document.querySelectorAll('.string-row.playing').forEach(el => el.classList.remove('playing'));
+    });
+
+    // FIXED: Corrected syntax error here
+    function processMouse(clientX, clientY) {
+        const target = document.elementFromPoint(clientX, clientY);
+        document.querySelectorAll('.string-row.playing').forEach(el => el.classList.remove('playing'));
+        if (target && target.dataset.col !== undefined) {
+            target.classList.add('playing');
+            const px = parseInt(target.dataset.col);
+            const py = parseInt(target.dataset.row);
+            const noteVal = gridPads[px] ? gridPads[px][py] : 0;
+            if (noteVal > 0 && !oldNotesPerCol[px].has(noteVal)) {
+                oldNotesPerCol[px].add(noteVal);
+                const freq = baseFreqs[(noteVal - 1) % baseFreqs.length] * 2;
+                const pan = (px / (currentChords.length - 1)) * 0.8 - 0.4;
+                playTone(freq, isNaN(pan) ? 0 : pan);
+                setTimeout(() => oldNotesPerCol[px].delete(noteVal), 300);
+            }
+        }
+    }
+
+    container.addEventListener('touchstart', handleTouchMoveOrStart, { passive: false });
+    container.addEventListener('touchmove', handleTouchMoveOrStart, { passive: false });
+    container.addEventListener('touchend', handleTouchEnd, { passive: false });
+    container.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+
+    buildUI();
+</script>
+
+</body>
+</html>
